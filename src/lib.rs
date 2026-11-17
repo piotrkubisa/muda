@@ -267,6 +267,7 @@ mod sealed;
 mod snapshot;
 mod state_cell;
 mod util;
+mod validation;
 
 pub use about_metadata::AboutMetadata;
 pub use builders::*;
@@ -280,3 +281,4 @@ pub use menu_id::MenuId;
 #[cfg(feature = "snapshot")]
 pub use snapshot::*;
 pub(crate) use state_cell::{StateCell, WeakStateCell};
+pub use validation::{set_menu_item_validator, MenuItemValidation, MenuItemValidator};

@@ -578,6 +578,14 @@ impl PlatformMenuItem {
             self.add_existing_item_to_instance(item, id)?;
         }
 
+        // Validate the children each time this submenu's popover is shown.
+        if let GtkMenuChild::Submenu { widget, .. } =
+            &self.instances[&context.menu_id].last().unwrap()
+        {
+            let children = children.to_vec();
+            widget.connect_show(move |_| apply_validation_to_items(&children));
+        }
+
         Ok(())
     }
 
@@ -773,7 +781,7 @@ impl PlatformMenuItem {
                 });
                 action
             }
-            MenuItemAction::Predefined(state) => {
+            MenuItemAction::Predefined(_, state) => {
                 let action = gio::SimpleAction::new(&self.action_name, None);
                 let state = state.upgrade();
                 let predefined_item_type = state.map(|s| s.borrow().predefined_item_type.clone());
@@ -847,6 +855,23 @@ impl PlatformMenuItem {
         self.for_each_custom_widget(|widget| widget.set_accelerator(accelerator));
 
         Ok(())
+    }
+
+    /// Applies a [`MenuItemValidation`](crate::MenuItemValidation) to this item's rows.
+    /// `hidden` is ignored: a `gio::Menu` row cannot be hidden.
+    pub fn apply_validation(&mut self, validation: &crate::MenuItemValidation) {
+        if let Some(enabled) = validation.enabled {
+            self.set_enabled(enabled);
+        }
+        if let Some(checked) = validation.checked {
+            // Only stateful (check) actions carry a checked state.
+            if self.is_checked().is_some() {
+                self.set_checked(checked);
+            }
+        }
+        if let Some(title) = &validation.title {
+            self.set_text(title, None);
+        }
     }
 
     /// A logical menu item is alive while at least one GTK menu row still
@@ -1156,6 +1181,19 @@ fn gio_item(text: &str, detailed_action: &str, id: GtkId) -> gio::MenuItem {
     item
 }
 
+/// Runs the menu item validator over `items` and applies what it returns.
+fn apply_validation_to_items(items: &[MenuItemKind]) {
+    if !crate::validation::validator_is_set() {
+        return;
+    }
+
+    for item in items {
+        if let Some(validation) = crate::validation::validate_menu_item(item.id()) {
+            item.platform().borrow_mut().apply_validation(&validation);
+        }
+    }
+}
+
 fn gio_custom_item(text: Option<&str>, detailed_action: Option<&str>, id: GtkId) -> gio::MenuItem {
     let label = text.map(to_gtk_mnemonic);
     let item = gio::MenuItem::new(label.as_deref(), detailed_action);
@@ -1366,6 +1404,8 @@ fn run_context_menu(
     x: i32,
     y: i32,
 ) -> bool {
+    apply_validation_to_items(items);
+
     let main_loop = glib::MainLoop::new(None, false);
     let selected = Rc::new(Cell::new(false));
 

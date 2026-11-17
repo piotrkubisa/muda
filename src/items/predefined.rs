@@ -322,8 +322,8 @@ impl PredefinedMenuItem {
         });
 
         // A predefined item emits no event; what it does instead is decided from its kind at
-        // click time, which is why the action needs a handle to state rather than the id.
-        let click = MenuItemAction::Predefined(state.downgrade());
+        // click time, which is why the action also carries a handle to state.
+        let click = MenuItemAction::Predefined(id.clone(), state.downgrade());
         let platform = PlatformMenuItem::new(click);
 
         Self {

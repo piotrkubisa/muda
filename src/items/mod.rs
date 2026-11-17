@@ -233,7 +233,16 @@ pub(crate) enum IconType {
 pub(crate) enum MenuItemAction {
     Emit(MenuId),
     Toggle(MenuId, WeakStateCell<CheckMenuItemState>),
-    Predefined(WeakStateCell<PredefinedMenuItemState>),
+    Predefined(MenuId, WeakStateCell<PredefinedMenuItemState>),
+}
+
+impl MenuItemAction {
+    /// The id of the menu item this action belongs to.
+    pub(crate) fn id(&self) -> &MenuId {
+        match self {
+            Self::Emit(id) | Self::Toggle(id, _) | Self::Predefined(id, _) => id,
+        }
+    }
 }
 
 #[cfg(test)]

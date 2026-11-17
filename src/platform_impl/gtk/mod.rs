@@ -262,6 +262,7 @@ impl PlatformMenu {
         widget: &impl IsA<gtk::Widget>,
         position: Option<Position>,
     ) -> bool {
+        apply_validation_to_items(children);
         let menu = self.gtk_context_menu(children);
         show_context_menu(menu, widget, position)
     }
@@ -491,6 +492,42 @@ impl PlatformMenuItem {
 
         Ok(())
     }
+
+    /// Applies a [`MenuItemValidation`](crate::MenuItemValidation) to this item's GTK rows.
+    pub fn apply_validation(&mut self, validation: &crate::MenuItemValidation) {
+        if let Some(enabled) = validation.enabled {
+            self.set_enabled(enabled);
+        }
+        if let Some(checked) = validation.checked {
+            // Only check items have a checked state, and `set_checked` expects one.
+            if self.is_syncing.is_some() {
+                self.set_checked(checked);
+            }
+        }
+        if let Some(hidden) = validation.hidden {
+            for items in self.gtk_menu_items.borrow().values() {
+                for i in items {
+                    i.set_visible(!hidden);
+                }
+            }
+        }
+        if let Some(title) = &validation.title {
+            self.set_text(title, None);
+        }
+    }
+}
+
+/// Runs the menu item validator over `items` and applies what it returns.
+fn apply_validation_to_items(items: &[MenuItemKind]) {
+    if !crate::validation::validator_is_set() {
+        return;
+    }
+
+    for item in items {
+        if let Some(validation) = crate::validation::validate_menu_item(item.id()) {
+            item.platform().borrow_mut().apply_validation(&validation);
+        }
+    }
 }
 
 /// CheckMenuItem methods
@@ -631,6 +668,7 @@ impl PlatformMenuItem {
         widget: &impl IsA<gtk::Widget>,
         position: Option<Position>,
     ) -> bool {
+        apply_validation_to_items(children);
         let menu = self.gtk_context_menu(children);
         show_context_menu(menu, widget, position)
     }
@@ -809,6 +847,12 @@ impl PlatformMenuItem {
             gtk_item.show();
         }
 
+        // Validate the children each time this menu is shown.
+        {
+            let children = children.to_vec();
+            submenu.connect_show(move |_| apply_validation_to_items(&children));
+        }
+
         Ok(item)
     }
 
@@ -856,7 +900,7 @@ impl PlatformMenuItem {
         add_to_cache: bool,
     ) -> crate::Result<gtk::MenuItem> {
         let predefined_item_type = match click {
-            MenuItemAction::Predefined(state) => state
+            MenuItemAction::Predefined(_, state) => state
                 .upgrade()
                 .map(|state| state.borrow().predefined_item_type.clone())
                 .expect("predefined menu item state was dropped"),

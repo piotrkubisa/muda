@@ -21,7 +21,7 @@ use objc2_app_kit::{
     NSAboutPanelOptionApplicationIcon, NSAboutPanelOptionApplicationName,
     NSAboutPanelOptionApplicationVersion, NSAboutPanelOptionCredits, NSAboutPanelOptionVersion,
     NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
-    NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSView, NSWindow,
+    NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSMenuItemValidation, NSView, NSWindow,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSAttributedString, NSCopying, NSDictionary, NSInteger, NSObject,
@@ -72,6 +72,14 @@ define_class!(
     unsafe impl NSMenuDelegate for MudaMenuDelegate {}
 );
 
+unsafe impl NSMenuItemValidation for MudaMenuDelegate {
+    fn validateMenuItem(&self, menu_item: &NSMenuItem) -> bool {
+        validate_ns_menu_item(menu_item);
+        // Validation only restyles the item here; it never blocks it.
+        true
+    }
+}
+
 impl MudaMenuDelegate {
     fn new(mtm: MainThreadMarker, menu_id: u32) -> Retained<Self> {
         let this = mtm.alloc().set_ivars(menu_id);
@@ -80,6 +88,28 @@ impl MudaMenuDelegate {
 
     fn menu_id(&self) -> u32 {
         *self.ivars()
+    }
+}
+
+/// Runs the menu item validator on one native menu item, if it is one of ours and a
+/// validator is set. Called by AppKit for each item right before its menu opens.
+fn validate_ns_menu_item(ns_item: &NSMenuItem) {
+    if !crate::validation::validator_is_set() {
+        return;
+    }
+
+    let Some(muda_item) = ns_item.downcast_ref::<MudaNSMenuItem>() else {
+        return;
+    };
+    // SAFETY: The ivar is initialized before the menu item is exposed and is
+    // never mutated afterward.
+    let item = unsafe { &*muda_item.ivars().as_ptr() };
+    let Some(item) = item.as_ref() else {
+        return;
+    };
+    let id = item.borrow().click.id().clone();
+    if let Some(validation) = crate::validation::validate_menu_item(&id) {
+        item.borrow_mut().apply_validation(ns_item, &validation);
     }
 }
 
@@ -267,6 +297,27 @@ impl PlatformMenuItem {
 
 /// Shared methods
 impl PlatformMenuItem {
+    /// Applies a [`MenuItemValidation`](crate::MenuItemValidation) to this item's native
+    /// rows. `ns_item` is the row AppKit is validating; `hidden` only applies to it.
+    pub fn apply_validation(
+        &mut self,
+        ns_item: &NSMenuItem,
+        validation: &crate::MenuItemValidation,
+    ) {
+        if let Some(enabled) = validation.enabled {
+            self.set_enabled(enabled);
+        }
+        if let Some(checked) = validation.checked {
+            self.set_checked(checked);
+        }
+        if let Some(hidden) = validation.hidden {
+            ns_item.setHidden(hidden);
+        }
+        if let Some(title) = &validation.title {
+            self.set_text(title, None);
+        }
+    }
+
     pub fn text(&self) -> Option<String> {
         self.ns_menu_items
             .values()
@@ -655,19 +706,21 @@ impl PlatformMenuItem {
         args: &PlatformAttachArgs,
         children: &[MenuItemKind],
         menu_id: u32,
+        owner: Rc<RefCell<PlatformMenuItem>>,
     ) -> crate::Result<Retained<NSMenuItem>> {
         let mtm = MainThreadMarker::new().expect("can only create menu item on the main thread");
-        let ns_menu_item;
         let ns_submenu;
 
+        // A MudaNSMenuItem rather than a plain NSMenuItem, so that the row carries the
+        // submenu's id and the validator can reach it in `validateMenuItem:`.
+        let ns_menu_item = {
+            let muda_item = MudaNSMenuItem::create(mtm, &args.text, None, &None)?;
+            muda_item.ivars().replace(Some(owner));
+            Retained::into_super(muda_item)
+        };
+
         let title = NSString::from_str(&strip_mnemonic(&args.text));
-        unsafe {
-            ns_menu_item = NSMenuItem::initWithTitle_action_keyEquivalent(
-                mtm.alloc(),
-                &title,
-                None,
-                &NSString::new(),
-            );
+        {
             ns_submenu = NSMenu::new(mtm);
             ns_submenu.setTitle(&title);
 
@@ -864,7 +917,7 @@ impl MudaNSMenuItem {
                 }
                 MenuEvent::send(MenuEvent { id });
             }
-            MenuItemAction::Predefined(_) => {
+            MenuItemAction::Predefined(..) => {
                 unreachable!("predefined menu item used the generic click action")
             }
         }
@@ -877,7 +930,7 @@ impl MudaNSMenuItem {
         let item = item.as_ref().expect("PlatformMenuItem pointer was unset");
         let click = item.borrow().click.clone();
 
-        let MenuItemAction::Predefined(state) = click else {
+        let MenuItemAction::Predefined(_, state) = click else {
             unreachable!("About menu item without predefined action");
         };
         let item_type = state
@@ -988,7 +1041,9 @@ impl MenuItemKind {
         let mut item = platform.borrow_mut();
 
         let ns_item = match self {
-            MenuItemKind::Submenu(_) => item.create_ns_submenu(&args, &self.items(), menu_id),
+            MenuItemKind::Submenu(_) => {
+                item.create_ns_submenu(&args, &self.items(), menu_id, platform.clone())
+            }
             MenuItemKind::MenuItem(_) => item.create_ns_item(&args, platform.clone(), menu_id),
             MenuItemKind::Predefined(i) => {
                 let predefined_item_type = i.state.borrow().predefined_item_type.clone();

@@ -615,6 +615,57 @@ impl PlatformMenuItem {
         Ok(())
     }
 
+    /// Applies a [`MenuItemValidation`](crate::MenuItemValidation) to this item's rows in
+    /// every parent menu. `hidden` is ignored: classic Win32 menus have no hidden state.
+    pub fn apply_validation(&mut self, validation: &crate::MenuItemValidation) {
+        if let Some(enabled) = validation.enabled {
+            self.set_enabled(enabled);
+        }
+        if let Some(checked) = validation.checked {
+            self.set_checked(checked);
+        }
+        if let Some(title) = &validation.title {
+            self.set_title(title);
+        }
+    }
+
+    /// Replaces the item's label in every parent menu, keeping the accelerator that
+    /// `set_text` appends after a tab.
+    fn set_title(&mut self, title: &str) {
+        for parent in &self.parents {
+            let mut info: MENUITEMINFOW = unsafe { std::mem::zeroed() };
+            info.cbSize = std::mem::size_of::<MENUITEMINFOW>() as _;
+            info.fMask = MIIM_STRING;
+
+            if unsafe { GetMenuItemInfoW(parent.hmenu, self.id(), FALSE, &mut info) } == 0 {
+                continue;
+            }
+
+            info.cch += 1;
+            let mut buffer = Vec::with_capacity(info.cch as usize);
+            info.dwTypeData = buffer.as_mut_ptr();
+
+            if unsafe { GetMenuItemInfoW(parent.hmenu, self.id(), FALSE, &mut info) } == 0 {
+                continue;
+            }
+
+            let current = util::decode_wide(info.dwTypeData);
+            let accelerator = current.split_once('\t').map(|(_, accel)| accel);
+            let mut text = match accelerator {
+                Some(accel) => util::encode_wide(format!("{title}\t{accel}")),
+                None => util::encode_wide(title),
+            };
+
+            let mut info: MENUITEMINFOW = unsafe { std::mem::zeroed() };
+            info.cbSize = std::mem::size_of::<MENUITEMINFOW>() as _;
+            info.fMask = MIIM_STRING;
+            info.dwTypeData = text.as_mut_ptr();
+            unsafe { SetMenuItemInfoW(parent.hmenu, self.id(), FALSE, &info) };
+        }
+
+        self.redraw_menu_bars();
+    }
+
     fn redraw_menu_bars(&self) {
         for parent in &self.parents {
             if let Some(windows) = &parent.windows {
@@ -1017,6 +1068,23 @@ unsafe extern "system" fn menu_subclass_proc(
             0
         }
 
+        WM_INITMENUPOPUP => {
+            // A popup menu is about to open: run the menu item validator over its items.
+            let hmenu = wparam as HMENU;
+            match uidsubclass {
+                MENU_SUBCLASS_ID => {
+                    let menu = util::cast_mut::<PlatformMenu>(dwrefdata);
+                    validate_popup_items(hmenu, |id| menu.find_by_id(id));
+                }
+                SUBMENU_SUBCLASS_ID => {
+                    let menu = util::cast_mut::<PlatformMenuItem>(dwrefdata);
+                    validate_popup_items(hmenu, |id| menu.find_by_id(id));
+                }
+                _ => {}
+            }
+            DefSubclassProc(hwnd, msg, wparam, lparam)
+        }
+
         WM_COMMAND => {
             let id = util::LOWORD(wparam as _);
 
@@ -1075,6 +1143,44 @@ unsafe extern "system" fn menu_subclass_proc(
     }
 }
 
+/// Applies the menu item validator to every item of a popup menu that is about to open.
+fn validate_popup_items(hmenu: HMENU, find: impl Fn(u16) -> Option<Rc<RefCell<PlatformMenuItem>>>) {
+    if !crate::validation::validator_is_set() {
+        return;
+    }
+
+    let count = unsafe { GetMenuItemCount(hmenu) };
+    for position in 0..count {
+        // A submenu row reports its container handle, not a command id, so skip popup
+        // rows and separators (which report zero) by the row type first.
+        let mut type_info: MENUITEMINFOW = unsafe { std::mem::zeroed() };
+        type_info.cbSize = std::mem::size_of::<MENUITEMINFOW>() as _;
+        type_info.fMask = MIIM_FTYPE;
+        if unsafe { GetMenuItemInfoW(hmenu, position as _, 1, &mut type_info) } == 0 {
+            continue;
+        }
+        if type_info.fType & (MF_POPUP | MF_SEPARATOR) != 0 {
+            continue;
+        }
+
+        let raw = unsafe { GetMenuItemID(hmenu, position) };
+        let Ok(id) = u16::try_from(raw) else {
+            continue;
+        };
+        if id == 0 {
+            continue;
+        }
+
+        let Some(item) = find(id) else {
+            continue;
+        };
+        let menu_id = item.borrow().click.id().clone();
+        if let Some(validation) = crate::validation::validate_menu_item(&menu_id) {
+            item.borrow_mut().apply_validation(&validation);
+        }
+    }
+}
+
 /// Handle a selection returned by [`PlatformMenu::show_context_menu`].
 ///
 /// Split out so that the caller can release its borrow of the container first.
@@ -1107,7 +1213,7 @@ unsafe fn handle_item_activate(hwnd: HWND, item: &Rc<RefCell<PlatformMenuItem>>)
             }
             MenuEvent::send(MenuEvent { id });
         }
-        MenuItemAction::Predefined(state) => {
+        MenuItemAction::Predefined(_, state) => {
             if let Some(state) = state.upgrade() {
                 let item_type = state.borrow().predefined_item_type.clone();
                 run_predefined(hwnd, &item_type);

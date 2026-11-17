@@ -159,7 +159,9 @@ impl MenuItemKind {
         match self {
             Self::MenuItem(item) => crate::MenuItemAction::Emit((*item.id).clone()),
             Self::Submenu(item) => crate::MenuItemAction::Emit((*item.id).clone()),
-            Self::Predefined(item) => crate::MenuItemAction::Predefined(item.state.downgrade()),
+            Self::Predefined(item) => {
+                crate::MenuItemAction::Predefined((*item.id).clone(), item.state.downgrade())
+            }
             Self::Check(item) => {
                 crate::MenuItemAction::Toggle((*item.id).clone(), item.state.downgrade())
             }
