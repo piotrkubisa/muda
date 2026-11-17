@@ -865,6 +865,38 @@ impl PlatformMenuItem {
         Ok(Retained::into_super(ns_menu_item))
     }
 
+    fn create_ns_radio_item(
+        &mut self,
+        args: &PlatformAttachArgs,
+        owner: Rc<RefCell<PlatformMenuItem>>,
+        menu_id: u32,
+    ) -> crate::Result<Retained<NSMenuItem>> {
+        let mtm = MainThreadMarker::new().expect("can only create menu item on the main thread");
+        let ns_menu_item = MudaNSMenuItem::create(
+            mtm,
+            &args.text,
+            Some(sel!(customAction:)),
+            &args.accelerator,
+        )?;
+
+        unsafe {
+            ns_menu_item.setTarget(Some(&ns_menu_item));
+            ns_menu_item.setEnabled(args.enabled);
+            if args.checked {
+                ns_menu_item.setState(NSControlStateValueOn);
+            }
+        }
+
+        ns_menu_item.ivars().replace(Some(owner));
+
+        self.ns_menu_items
+            .entry(menu_id)
+            .or_default()
+            .push(Retained::into_super(ns_menu_item.retain()));
+
+        Ok(Retained::into_super(ns_menu_item))
+    }
+
     fn create_ns_icon_item(
         &mut self,
         args: &PlatformAttachArgs,
@@ -916,6 +948,12 @@ impl MudaNSMenuItem {
                     item.borrow_mut().set_checked(checked);
                 }
                 MenuEvent::send(MenuEvent { id });
+            }
+            MenuItemAction::Radio(id, state, group) => {
+                // The native row shows the checked state; the group is unchecked in
+                // shared state, and its other native rows through their platforms.
+                item.borrow_mut().set_checked(true);
+                crate::items::activate_radio(&id, &state, &group);
             }
             MenuItemAction::Predefined(..) => {
                 unreachable!("predefined menu item used the generic click action")
@@ -1055,6 +1093,7 @@ impl MenuItemKind {
                 )
             }
             MenuItemKind::Check(_) => item.create_ns_check_item(&args, platform.clone(), menu_id),
+            MenuItemKind::Radio(_) => item.create_ns_radio_item(&args, platform.clone(), menu_id),
             MenuItemKind::Icon(_) => item.create_ns_icon_item(&args, platform.clone(), menu_id),
         }?;
 

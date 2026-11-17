@@ -85,6 +85,7 @@ impl MenuItemKind {
             Self::Predefined(item) => item.platform.clone(),
             Self::Check(item) => item.platform.clone(),
             Self::Icon(item) => item.platform.clone(),
+            Self::Radio(item) => item.platform.clone(),
         }
     }
 }
@@ -151,6 +152,16 @@ impl MenuItemKind {
                     icon: state.icon.clone(),
                 }
             }
+            MenuItemKind::Radio(item) => {
+                let state = item.state.borrow();
+                PlatformAttachArgs {
+                    text: state.text.clone(),
+                    enabled: state.enabled,
+                    checked: state.checked,
+                    accelerator: state.accelerator.clone(),
+                    icon: None,
+                }
+            }
         }
     }
 
@@ -166,6 +177,11 @@ impl MenuItemKind {
                 crate::MenuItemAction::Toggle((*item.id).clone(), item.state.downgrade())
             }
             Self::Icon(item) => crate::MenuItemAction::Emit((*item.id).clone()),
+            Self::Radio(item) => crate::MenuItemAction::Radio(
+                (*item.id).clone(),
+                item.state.downgrade(),
+                item.state.borrow().group.clone(),
+            ),
         }
     }
 

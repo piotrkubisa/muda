@@ -781,6 +781,22 @@ impl PlatformMenuItem {
                 });
                 action
             }
+            MenuItemAction::Radio(id, state, group) => {
+                let action = gio::SimpleAction::new_stateful(
+                    &self.action_name,
+                    None,
+                    &args.checked.to_variant(),
+                );
+                let id = id.clone();
+                let state = state.clone();
+                let group = group.clone();
+                action.connect_activate(move |action, _| {
+                    // A radio item activates to checked; it never toggles back off.
+                    action.set_state(&true.to_variant());
+                    crate::items::activate_radio(&id, &state, &group);
+                });
+                action
+            }
             MenuItemAction::Predefined(_, state) => {
                 let action = gio::SimpleAction::new(&self.action_name, None);
                 let state = state.upgrade();
@@ -1161,6 +1177,9 @@ impl MenuItemKind {
             Self::Submenu(_) => child.insert_gtk_submenu(&args, &self.items(), &context, op),
             Self::MenuItem(_) => child.insert_gtk_item(&args, &click, &context, op),
             Self::Check(_) => child.insert_gtk_check_item(&args, &click, &context, op),
+            // A radio item is a stateful item like a check item; GTK 4 draws both as a
+            // checkbox, and the group behavior comes from `activate_radio`.
+            Self::Radio(_) => child.insert_gtk_check_item(&args, &click, &context, op),
             Self::Icon(_) => child.insert_gtk_icon_item(&args, &click, &context, op),
             Self::Predefined(item)
                 if matches!(

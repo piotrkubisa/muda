@@ -7,7 +7,8 @@ use crate::{
     items::{IconType, PredefinedMenuItemType},
     platform_impl::{self, PlatformMenuItem},
     CheckMenuItemState, IconMenuItemState, MenuEvent, MenuItemKind, MenuItemState, MenuState,
-    NativeIcon, PredefinedMenuItemState, StateCell, SubmenuState, UnsafeMenuItemKind,
+    NativeIcon, PredefinedMenuItemState, RadioMenuItemState, StateCell, SubmenuState,
+    UnsafeMenuItemKind,
 };
 
 /// Notification emitted after a menu or menu item changes.
@@ -131,6 +132,14 @@ pub struct IconMenuItemSnapshot {
     pub activate: Arc<dyn Fn() + Send + Sync>,
 }
 
+/// A thread-safe read projection and activation callback for a [`crate::RadioMenuItem`].
+#[derive(Clone)]
+pub struct RadioMenuItemSnapshot {
+    pub(crate) state: StateCell<RadioMenuItemState>,
+    /// Checks the item, unchecks the other items of its group, and emits its [`crate::MenuEvent`].
+    pub activate: Arc<dyn Fn() + Send + Sync>,
+}
+
 /// A thread-safe snapshot handle for any menu item kind.
 #[derive(Clone)]
 pub enum MenuItemKindSnapshot {
@@ -139,6 +148,7 @@ pub enum MenuItemKindSnapshot {
     Predefined(PredefinedMenuItemSnapshot),
     Check(CheckMenuItemSnapshot),
     Icon(IconMenuItemSnapshot),
+    Radio(RadioMenuItemSnapshot),
 }
 
 /// An icon value that can be read from a menu snapshot on any thread.
@@ -259,6 +269,28 @@ impl CheckMenuItemSnapshot {
     }
 }
 
+impl RadioMenuItemSnapshot {
+    /// Returns the radio menu item's text.
+    pub fn text(&self) -> String {
+        self.state.borrow().text.clone()
+    }
+
+    /// Returns whether the radio menu item is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.state.borrow().enabled
+    }
+
+    /// Returns whether the radio menu item is checked.
+    pub fn is_checked(&self) -> bool {
+        self.state.borrow().checked
+    }
+
+    /// Returns the group the radio menu item belongs to.
+    pub fn group(&self) -> String {
+        self.state.borrow().group.clone()
+    }
+}
+
 impl IconMenuItemSnapshot {
     /// Returns the icon menu item's text.
     pub fn text(&self) -> String {
@@ -360,6 +392,48 @@ impl From<&MenuItemKind> for MenuItemKindSnapshot {
                 Self::Icon(IconMenuItemSnapshot {
                     state: item.state.clone(),
                     activate: Arc::new(move || {
+                        MenuEvent::send(MenuEvent { id: (*id).clone() });
+                    }),
+                })
+            }
+            MenuItemKind::Radio(item) => {
+                let id = Arc::clone(&item.id);
+                let state = item.state.clone();
+                let group = item.state.borrow().group.clone();
+                let platform = Arc::new(UnsafeSend::new(item.platform.clone()));
+
+                Self::Radio(RadioMenuItemSnapshot {
+                    state: state.clone(),
+                    activate: Arc::new(move || {
+                        {
+                            let mut state = state.borrow_mut();
+                            state.checked = true;
+                        }
+
+                        // Uncheck the other items of the group, on any thread for their
+                        // shared state and on the owner thread for their native rows.
+                        for sibling in crate::items::radio_group_states(&group, &state) {
+                            sibling.borrow_mut().checked = false;
+                        }
+                        let siblings = crate::items::radio_group_platforms(&group, &state)
+                            .into_iter()
+                            .filter_map(|weak| weak.upgrade())
+                            .map(UnsafeSend::new)
+                            .collect::<Vec<_>>();
+
+                        let platform = Arc::clone(&platform);
+                        let state = state.clone();
+                        platform_impl::dispatch_on_main_thread(move || {
+                            // SAFETY: the platform runs this callback on the items' owner thread.
+                            unsafe { platform.local() }
+                                .borrow_mut()
+                                .set_checked(state.borrow().checked);
+                            for sibling in siblings {
+                                // SAFETY: same owner thread as above.
+                                unsafe { sibling.local() }.borrow_mut().set_checked(false);
+                            }
+                        });
+
                         MenuEvent::send(MenuEvent { id: (*id).clone() });
                     }),
                 })

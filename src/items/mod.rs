@@ -9,6 +9,7 @@ mod icon;
 mod menu;
 mod normal;
 mod predefined;
+pub(crate) mod radio;
 mod submenu;
 
 pub use check::*;
@@ -16,6 +17,10 @@ pub use icon::*;
 pub use menu::*;
 pub use normal::*;
 pub use predefined::*;
+pub use radio::RadioMenuItem;
+pub(crate) use radio::{activate_radio, RadioMenuItemState};
+#[cfg(feature = "snapshot")]
+pub(crate) use radio::{radio_group_platforms, radio_group_states};
 pub use submenu::*;
 
 // ---------------
@@ -41,6 +46,7 @@ pub enum MenuItemKind {
     Predefined(PredefinedMenuItem),
     Check(CheckMenuItem),
     Icon(IconMenuItem),
+    Radio(RadioMenuItem),
 }
 
 // ---------------
@@ -128,6 +134,7 @@ impl MenuItemKind {
             MenuItemKind::Predefined(i) => i.id(),
             MenuItemKind::Check(i) => i.id(),
             MenuItemKind::Icon(i) => i.id(),
+            MenuItemKind::Radio(i) => i.id(),
         }
     }
 
@@ -203,6 +210,22 @@ impl MenuItemKind {
         }
     }
 
+    /// Casts this item to a [`RadioMenuItem`], and returns `None` if it wasn't.
+    pub fn as_radio_menuitem(&self) -> Option<&RadioMenuItem> {
+        match self {
+            MenuItemKind::Radio(i) => Some(i),
+            _ => None,
+        }
+    }
+
+    /// Casts this item to a [`RadioMenuItem`], and panics if it wasn't.
+    pub fn as_radio_menuitem_unchecked(&self) -> &RadioMenuItem {
+        match self {
+            MenuItemKind::Radio(i) => i,
+            _ => panic!("Not a RadioMenuItem"),
+        }
+    }
+
     /// Casts this item to a [`IconMenuItem`], and panics if it wasn't.
     pub fn as_icon_menuitem_unchecked(&self) -> &IconMenuItem {
         match self {
@@ -219,6 +242,7 @@ impl MenuItemKind {
             MenuItemKind::Predefined(i) => i.into_id(),
             MenuItemKind::Check(i) => i.into_id(),
             MenuItemKind::Icon(i) => i.into_id(),
+            MenuItemKind::Radio(i) => i.into_id(),
         }
     }
 }
@@ -234,13 +258,17 @@ pub(crate) enum MenuItemAction {
     Emit(MenuId),
     Toggle(MenuId, WeakStateCell<CheckMenuItemState>),
     Predefined(MenuId, WeakStateCell<PredefinedMenuItemState>),
+    Radio(MenuId, WeakStateCell<RadioMenuItemState>, String),
 }
 
 impl MenuItemAction {
     /// The id of the menu item this action belongs to.
     pub(crate) fn id(&self) -> &MenuId {
         match self {
-            Self::Emit(id) | Self::Toggle(id, _) | Self::Predefined(id, _) => id,
+            Self::Emit(id)
+            | Self::Toggle(id, _)
+            | Self::Predefined(id, _)
+            | Self::Radio(id, ..) => id,
         }
     }
 }

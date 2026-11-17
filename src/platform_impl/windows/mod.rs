@@ -1213,6 +1213,10 @@ unsafe fn handle_item_activate(hwnd: HWND, item: &Rc<RefCell<PlatformMenuItem>>)
             }
             MenuEvent::send(MenuEvent { id });
         }
+        MenuItemAction::Radio(id, state, group) => {
+            item.borrow_mut().set_checked(true);
+            crate::items::activate_radio(&id, &state, &group);
+        }
         MenuItemAction::Predefined(_, state) => {
             if let Some(state) = state.upgrade() {
                 let item_type = state.borrow().predefined_item_type.clone();

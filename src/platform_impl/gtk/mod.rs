@@ -344,7 +344,10 @@ fn drop_children_from_menu_and_destroy(
 /// Constructors
 impl PlatformMenuItem {
     pub fn new(click: MenuItemAction) -> Self {
-        let needs_syncing = matches!(click, MenuItemAction::Toggle(..));
+        let needs_syncing = matches!(
+            click,
+            MenuItemAction::Toggle(..) | MenuItemAction::Radio(..)
+        );
         let is_syncing = needs_syncing.then(|| Rc::new(AtomicBool::new(false)));
 
         Self {
@@ -1031,6 +1034,70 @@ impl PlatformMenuItem {
         Ok(item)
     }
 
+    fn create_gtk_radio_item(
+        &mut self,
+        args: &PlatformAttachArgs,
+        click: &MenuItemAction,
+        menu_id: u32,
+        accel_group: Option<&gtk::AccelGroup>,
+        add_to_cache: bool,
+    ) -> crate::Result<gtk::MenuItem> {
+        // No GTK radio group is set: unchecking the other items of the muda group is
+        // done in `activate_radio`, which also keeps their shared state in step.
+        let item = gtk::RadioMenuItem::builder()
+            .label(to_gtk_mnemonic(&args.text))
+            .use_underline(true)
+            .sensitive(args.enabled)
+            .active(args.checked)
+            .build();
+
+        self.register_accelerator(args, &item, menu_id, accel_group, add_to_cache)?;
+
+        let (id, state, group) = match click {
+            MenuItemAction::Radio(id, state, group) => (id.clone(), state.clone(), group.clone()),
+            _ => unreachable!("radio item without radio action"),
+        };
+
+        let is_syncing = self
+            .is_syncing
+            .clone()
+            .expect("radio menu item is missing its synchronization state");
+
+        let store = self.gtk_menu_items.clone();
+        item.connect_toggled(move |i| {
+            let should_dispatch = is_syncing
+                .compare_exchange(false, true, Ordering::Release, Ordering::Relaxed)
+                .is_ok();
+
+            if should_dispatch && i.is_active() {
+                // Keep this item's own rows in step, then uncheck the rest of the group.
+                for items in store.borrow().values() {
+                    for i in items {
+                        i.downcast_ref::<gtk::CheckMenuItem>()
+                            .unwrap()
+                            .set_active(true);
+                    }
+                }
+
+                crate::items::activate_radio(&id, &state, &group);
+            }
+
+            is_syncing.store(false, Ordering::Release);
+        });
+
+        let item = item.upcast::<gtk::MenuItem>();
+
+        if add_to_cache {
+            self.gtk_menu_items
+                .borrow_mut()
+                .entry(menu_id)
+                .or_default()
+                .push(item.clone());
+        }
+
+        Ok(item)
+    }
+
     fn create_gtk_icon_item(
         &mut self,
         args: &PlatformAttachArgs,
@@ -1123,6 +1190,9 @@ impl MenuItemKind {
             }
             Self::Check(_) => {
                 item.create_gtk_check_item(&args, &click, menu_id, accel_group, add_to_cache)
+            }
+            Self::Radio(_) => {
+                item.create_gtk_radio_item(&args, &click, menu_id, accel_group, add_to_cache)
             }
             Self::Icon(_) => item.create_gtk_icon_item(
                 &args,
