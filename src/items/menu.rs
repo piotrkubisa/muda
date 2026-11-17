@@ -546,15 +546,57 @@ impl Menu {
     }
 
     /// Adds this menu to an NSApp.
+    ///
+    /// This replaces the current main menu, including the app menu items macOS adds
+    /// itself (About, Services, Hide, Quit, and so on). Use
+    /// [`Menu::init_for_nsapp_merged`] to keep those.
     #[cfg(target_os = "macos")]
     pub fn init_for_nsapp(&self) {
-        self.platform.borrow_mut().init_for_nsapp()
+        let children = self.items();
+        self.platform.borrow_mut().init_for_nsapp(&children)
+    }
+
+    /// Adds this menu to an NSApp without replacing the current main menu.
+    ///
+    /// The current main menu keeps its own items — the app menu with About, Services,
+    /// Hide, Quit, and so on — and this menu's items are added to it as extra top-level
+    /// rows. When there is no main menu yet, this menu becomes it, exactly like
+    /// [`Menu::init_for_nsapp`].
+    ///
+    /// Items added later with [`Menu::append`] and friends get rows in the main menu
+    /// too, and [`Menu::remove`] takes them back out.
+    ///
+    /// macOS only, like [`Menu::init_for_nsapp`]; on other platforms this method does
+    /// not exist.
+    #[cfg(target_os = "macos")]
+    pub fn init_for_nsapp_merged(&self) {
+        let children = self.items();
+        self.platform.borrow_mut().init_for_nsapp_merged(&children)
+    }
+
+    /// Appends an item to the current NSApp main menu, without replacing the menu.
+    ///
+    /// The item gets a row in the main menu in addition to its row in this menu. If
+    /// the current main menu is this menu itself, this is the same as [`Menu::append`].
+    /// If there is no main menu yet, the item is only added to this menu, and shows up
+    /// when this menu is later set as the main menu.
+    ///
+    /// macOS only, like [`Menu::init_for_nsapp`]; on other platforms this method does
+    /// not exist.
+    #[cfg(target_os = "macos")]
+    pub fn append_to_nsapp_main_menu(&self, item: &dyn IsMenuItem) -> crate::Result<()> {
+        self.platform.borrow_mut().ensure_merged_into_nsapp();
+        self.append(item)
     }
 
     /// Removes this menu from an NSApp.
+    ///
+    /// When this menu was merged into the main menu with [`Menu::init_for_nsapp_merged`],
+    /// only this menu's rows are taken out and the main menu stays.
     #[cfg(target_os = "macos")]
     pub fn remove_for_nsapp(&self) {
-        self.platform.borrow_mut().remove_for_nsapp()
+        let children = self.items();
+        self.platform.borrow_mut().remove_for_nsapp(&children)
     }
 
     /// Removes this menu from the NSApp main menu, but only if it is the current main
@@ -566,7 +608,8 @@ impl Menu {
     /// [`Menu::remove_for_nsapp`].
     #[cfg(target_os = "macos")]
     pub fn remove_from_main_menu(&self) {
-        self.platform.borrow_mut().remove_from_main_menu()
+        let children = self.items();
+        self.platform.borrow_mut().remove_from_main_menu(&children)
     }
 }
 

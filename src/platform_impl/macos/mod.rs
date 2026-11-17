@@ -162,6 +162,10 @@ impl Drop for NsMenuRef {
 
 pub struct PlatformMenu {
     ns_menu: NsMenuRef,
+    /// The NSApp main menu this menu was merged into, with the parent id its extra
+    /// instances were created under. `None` while this menu is the main menu itself,
+    /// or was never attached to the NSApp.
+    merged_into: Option<(Retained<NSMenu>, u32)>,
 }
 
 impl PlatformMenu {
@@ -171,6 +175,7 @@ impl PlatformMenu {
         ns_menu.setAutoenablesItems(false);
         Self {
             ns_menu: NsMenuRef::new(mtm, COUNTER.next(), ns_menu),
+            merged_into: None,
         }
     }
 
@@ -186,17 +191,40 @@ impl PlatformMenu {
             }
         }
 
+        // In merged mode the item also gets a row in the NSApp main menu.
+        if let Some((main_menu, parent_id)) = &self.merged_into {
+            let ns_menu_item = item.create_ns(*parent_id)?;
+            match op {
+                AddOp::Append => main_menu.addItem(&ns_menu_item),
+                AddOp::Insert(position) => {
+                    main_menu.insertItem_atIndex(&ns_menu_item, position as NSInteger);
+                }
+            }
+        }
+
         Ok(())
     }
 
     pub fn remove_at(&mut self, position: usize, item: &MenuItemKind) {
         let children = item.items();
-        item.platform()
-            .borrow_mut()
-            .remove_instance_for_parent_at_position(&self.ns_menu, position, &children);
+        let platform = item.platform();
+        let mut platform = platform.borrow_mut();
+        platform.remove_instance_for_parent_at_position(
+            &self.ns_menu.1,
+            self.ns_menu.0,
+            position,
+            &children,
+        );
+
+        if let Some((main_menu, parent_id)) = &self.merged_into {
+            platform
+                .remove_instance_for_parent_at_position(main_menu, *parent_id, position, &children);
+        }
     }
 
     pub fn destroy(&mut self, children: &[MenuItemKind]) {
+        self.detach_merged(children);
+
         // `MainThreadMarker::from` asserts the main thread in debug builds, and unit
         // tests drop menus on worker threads, so only touch NSApp from the main thread.
         if let Some(mtm) = MainThreadMarker::new() {
@@ -207,13 +235,77 @@ impl PlatformMenu {
         remove_children_instances_for_parent(self.ns_menu.0, children);
     }
 
-    pub fn init_for_nsapp(&self) {
+    /// Removes this menu's extra rows from the NSApp main menu it was merged into.
+    fn detach_merged(&mut self, children: &[MenuItemKind]) {
+        let Some((main_menu, parent_id)) = self.merged_into.take() else {
+            return;
+        };
+
+        for child in children {
+            let descendants = child.items();
+            let platform = child.platform();
+            let mut platform = platform.borrow_mut();
+            platform.remove_rows_from_menu(parent_id, &main_menu);
+            platform.remove_instances_for_parent(parent_id, &descendants);
+        }
+    }
+
+    pub fn init_for_nsapp(&mut self, children: &[MenuItemKind]) {
+        // Replacing the main menu detaches any rows this menu merged into the old one.
+        self.detach_merged(children);
+
         let mtm = MainThreadMarker::from(&*self.ns_menu.1);
         let app = NSApplication::sharedApplication(mtm);
         app.setMainMenu(Some(&self.ns_menu.1));
     }
 
-    pub fn remove_for_nsapp(&self) {
+    /// Like [`Self::init_for_nsapp`], but keeps the current NSApp main menu and its
+    /// items (the app menu with About, Services, Hide, Quit, and so on), and adds this
+    /// menu's items to it as extra top-level rows. When there is no main menu yet,
+    /// this menu becomes it, exactly like [`Self::init_for_nsapp`].
+    pub fn init_for_nsapp_merged(&mut self, children: &[MenuItemKind]) {
+        let mtm = MainThreadMarker::from(&*self.ns_menu.1);
+        let app = NSApplication::sharedApplication(mtm);
+
+        match app.mainMenu() {
+            Some(main_menu) if !std::ptr::eq(&*main_menu, &*self.ns_menu.1) => {
+                let parent_id = COUNTER.next();
+                for child in children {
+                    match child.create_ns(parent_id) {
+                        Ok(ns_item) => main_menu.addItem(&ns_item),
+                        Err(_) => continue,
+                    }
+                }
+                self.merged_into = Some((main_menu, parent_id));
+            }
+            _ => app.setMainMenu(Some(&self.ns_menu.1)),
+        }
+    }
+
+    /// Starts merging into the current NSApp main menu, if there is one and it is not
+    /// this menu. Later [`Self::attach`] calls then add rows to that menu too.
+    pub fn ensure_merged_into_nsapp(&mut self) {
+        if self.merged_into.is_some() {
+            return;
+        }
+
+        let mtm = MainThreadMarker::from(&*self.ns_menu.1);
+        let app = NSApplication::sharedApplication(mtm);
+        if let Some(main_menu) = app.mainMenu() {
+            if !std::ptr::eq(&*main_menu, &*self.ns_menu.1) {
+                self.merged_into = Some((main_menu, COUNTER.next()));
+            }
+        }
+    }
+
+    pub fn remove_for_nsapp(&mut self, children: &[MenuItemKind]) {
+        // In merged mode, removing this menu means taking its rows back out of the
+        // main menu and leaving the main menu itself in place.
+        if self.merged_into.is_some() {
+            self.detach_merged(children);
+            return;
+        }
+
         let mtm = MainThreadMarker::from(&*self.ns_menu.1);
         let app = NSApplication::sharedApplication(mtm);
         app.setMainMenu(None);
@@ -221,8 +313,14 @@ impl PlatformMenu {
 
     /// Removes this menu from the NSApp main menu, but only if it is the current main
     /// menu. A context menu dropped here never clears the main menu, because its
-    /// `NSMenu` is not the one `NSApp.mainMenu` points to.
-    pub fn remove_from_main_menu(&self) {
+    /// `NSMenu` is not the one `NSApp.mainMenu` points to. In merged mode, this takes
+    /// this menu's rows out of the main menu instead.
+    pub fn remove_from_main_menu(&mut self, children: &[MenuItemKind]) {
+        if self.merged_into.is_some() {
+            self.detach_merged(children);
+            return;
+        }
+
         let mtm = MainThreadMarker::from(&*self.ns_menu.1);
         let app = NSApplication::sharedApplication(mtm);
         clear_main_menu_if_current(&app, &self.ns_menu.1);
@@ -553,17 +651,23 @@ impl PlatformMenuItem {
 
         for parent_menu in parent_menus {
             let mut child = child.borrow_mut();
-            child.remove_instance_for_parent_at_position(&parent_menu, position, &children);
+            child.remove_instance_for_parent_at_position(
+                &parent_menu.1,
+                parent_menu.0,
+                position,
+                &children,
+            );
         }
     }
 
     fn remove_instance_for_parent_at_position(
         &mut self,
-        parent_menu: &NsMenuRef,
+        parent_menu: &NSMenu,
+        parent_id: u32,
         position: usize,
         children: &[MenuItemKind],
     ) {
-        let Some(ns_item) = parent_menu.1.itemAtIndex(position as NSInteger) else {
+        let Some(ns_item) = parent_menu.itemAtIndex(position as NSInteger) else {
             return;
         };
 
@@ -572,11 +676,26 @@ impl PlatformMenuItem {
         }
 
         if self.is_submenu() {
-            self.remove_ns_menu_for_parent_item(parent_menu.0, &ns_item, children);
+            self.remove_ns_menu_for_parent_item(parent_id, &ns_item, children);
         }
 
-        self.remove_ns_menu_item_for_parent(parent_menu.0, &ns_item);
-        parent_menu.1.removeItemAtIndex(position as NSInteger);
+        self.remove_ns_menu_item_for_parent(parent_id, &ns_item);
+        parent_menu.removeItemAtIndex(position as NSInteger);
+    }
+
+    /// Removes this item's native rows from a menu without touching the bookkeeping,
+    /// which [`Self::remove_instances_for_parent`] does right after.
+    fn remove_rows_from_menu(&mut self, parent_id: u32, menu: &NSMenu) {
+        if let Some(items) = self.ns_menu_items.remove(&parent_id) {
+            if self.is_services_menu {
+                for item in &items {
+                    remove_services_menu_for_nsapp(item);
+                }
+            }
+            for item in items {
+                menu.removeItem(&item);
+            }
+        }
     }
 
     fn remove_ns_menu_for_parent_item(
