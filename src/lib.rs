@@ -275,7 +275,7 @@ pub use dpi;
 pub use error::*;
 pub use icon::{BadIcon, Icon, NativeIcon};
 pub use items::*;
-pub use menu_event::{MenuEvent, MenuEventHandler, MenuEventReceiver};
+pub use menu_event::{MenuEvent, MenuEventHandler, MenuEventReceiver, MenuEventWaker};
 pub use menu_id::MenuId;
 #[cfg(feature = "snapshot")]
 pub use snapshot::*;
