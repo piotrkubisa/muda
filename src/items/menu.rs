@@ -556,6 +556,18 @@ impl Menu {
     pub fn remove_for_nsapp(&self) {
         self.platform.borrow_mut().remove_for_nsapp()
     }
+
+    /// Removes this menu from the NSApp main menu, but only if it is the current main
+    /// menu. Use this to take a menu down on purpose; dropping the [`Menu`] also clears
+    /// the main menu only when the dropped menu is the current one, so dropping a
+    /// context menu never removes the app's menu bar.
+    ///
+    /// To clear the main menu no matter which menu it holds, use
+    /// [`Menu::remove_for_nsapp`].
+    #[cfg(target_os = "macos")]
+    pub fn remove_from_main_menu(&self) {
+        self.platform.borrow_mut().remove_from_main_menu()
+    }
 }
 
 impl crate::sealed::Sealed for Menu {}

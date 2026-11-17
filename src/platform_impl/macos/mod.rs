@@ -185,12 +185,7 @@ impl PlatformMenu {
     pub fn destroy(&mut self, children: &[MenuItemKind]) {
         let mtm = MainThreadMarker::from(&*self.ns_menu.1);
         let app = NSApplication::sharedApplication(mtm);
-        if app
-            .mainMenu()
-            .is_some_and(|menu| std::ptr::eq(&*menu, &*self.ns_menu.1))
-        {
-            app.setMainMenu(None);
-        }
+        clear_main_menu_if_current(&app, &self.ns_menu.1);
 
         remove_children_instances_for_parent(self.ns_menu.0, children);
     }
@@ -205,6 +200,15 @@ impl PlatformMenu {
         let mtm = MainThreadMarker::from(&*self.ns_menu.1);
         let app = NSApplication::sharedApplication(mtm);
         app.setMainMenu(None);
+    }
+
+    /// Removes this menu from the NSApp main menu, but only if it is the current main
+    /// menu. A context menu dropped here never clears the main menu, because its
+    /// `NSMenu` is not the one `NSApp.mainMenu` points to.
+    pub fn remove_from_main_menu(&self) {
+        let mtm = MainThreadMarker::from(&*self.ns_menu.1);
+        let app = NSApplication::sharedApplication(mtm);
+        clear_main_menu_if_current(&app, &self.ns_menu.1);
     }
 
     pub unsafe fn show_context_menu_for_nsview(
@@ -450,6 +454,16 @@ impl PlatformMenuItem {
                 menuitem_set_icon_type(ns_item, icon, is_template);
             }
         }
+    }
+}
+
+/// Clears the app's main menu, but only when `ns_menu` is the current main menu.
+fn clear_main_menu_if_current(app: &NSApplication, ns_menu: &NSMenu) {
+    if app
+        .mainMenu()
+        .is_some_and(|menu| std::ptr::eq(&*menu, ns_menu))
+    {
+        app.setMainMenu(None);
     }
 }
 
