@@ -40,6 +40,21 @@ use crate::{
 
 static COUNTER: Counter = Counter::new();
 
+/// A `MainThreadMarker` for creating menus and menu items.
+///
+/// Outside tests this requires the main thread. Under `cfg(test)` any thread is
+/// allowed, so that unit tests, which run on worker threads, can build menu structure.
+/// Nothing built that way may be shown on screen from there.
+fn main_thread_marker() -> MainThreadMarker {
+    if cfg!(test) {
+        // SAFETY: in tests the objects are only built, inspected, and dropped on the
+        // same worker thread; no menu is ever shown on screen.
+        unsafe { MainThreadMarker::new_unchecked() }
+    } else {
+        MainThreadMarker::new().expect("`muda` menus can only be created on the main thread")
+    }
+}
+
 #[cfg(feature = "snapshot")]
 pub(crate) fn dispatch_on_main_thread<F>(f: F)
 where
@@ -151,8 +166,7 @@ pub struct PlatformMenu {
 
 impl PlatformMenu {
     pub fn new() -> Self {
-        let mtm =
-            MainThreadMarker::new().expect("`muda::Menu` can only be created on the main thread");
+        let mtm = main_thread_marker();
         let ns_menu = NSMenu::new(mtm);
         ns_menu.setAutoenablesItems(false);
         Self {
@@ -183,9 +197,12 @@ impl PlatformMenu {
     }
 
     pub fn destroy(&mut self, children: &[MenuItemKind]) {
-        let mtm = MainThreadMarker::from(&*self.ns_menu.1);
-        let app = NSApplication::sharedApplication(mtm);
-        clear_main_menu_if_current(&app, &self.ns_menu.1);
+        // `MainThreadMarker::from` asserts the main thread in debug builds, and unit
+        // tests drop menus on worker threads, so only touch NSApp from the main thread.
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            clear_main_menu_if_current(&app, &self.ns_menu.1);
+        }
 
         remove_children_instances_for_parent(self.ns_menu.0, children);
     }
@@ -251,12 +268,7 @@ impl PlatformMenuItem {
     }
 
     pub fn new_submenu(click: MenuItemAction) -> Self {
-        let mtm = if cfg!(test) {
-            unsafe { MainThreadMarker::new_unchecked() }
-        } else {
-            MainThreadMarker::new()
-                .expect("`muda::PlatformMenuItem` can only be created on the main thread")
-        };
+        let mtm = main_thread_marker();
         Self {
             click,
             is_services_menu: false,
@@ -481,7 +493,9 @@ fn remove_services_menu_for_nsapp(ns_item: &NSMenuItem) {
     let Some(submenu) = ns_item.submenu() else {
         return;
     };
-    let mtm = MainThreadMarker::from(&*submenu);
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
     let app = NSApplication::sharedApplication(mtm);
     if app
         .servicesMenu()
@@ -635,7 +649,9 @@ impl PlatformMenuItem {
             return;
         }
 
-        let mtm = MainThreadMarker::from(&*self.ns_menu.as_ref().unwrap().1);
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
         let app = NSApplication::sharedApplication(mtm);
         let owns_menu = |menu: &NSMenu| {
             self.ns_menus
@@ -722,7 +738,7 @@ impl PlatformMenuItem {
         menu_id: u32,
         owner: Rc<RefCell<PlatformMenuItem>>,
     ) -> crate::Result<Retained<NSMenuItem>> {
-        let mtm = MainThreadMarker::new().expect("can only create menu item on the main thread");
+        let mtm = main_thread_marker();
         let ns_submenu;
 
         // A MudaNSMenuItem rather than a plain NSMenuItem, so that the row carries the
@@ -773,7 +789,7 @@ impl PlatformMenuItem {
         owner: Rc<RefCell<PlatformMenuItem>>,
         menu_id: u32,
     ) -> crate::Result<Retained<NSMenuItem>> {
-        let mtm = MainThreadMarker::new().expect("can only create menu item on the main thread");
+        let mtm = main_thread_marker();
         let ns_menu_item = MudaNSMenuItem::create(
             mtm,
             &args.text,
@@ -803,7 +819,7 @@ impl PlatformMenuItem {
         owner: Rc<RefCell<PlatformMenuItem>>,
         menu_id: u32,
     ) -> crate::Result<Retained<NSMenuItem>> {
-        let mtm = MainThreadMarker::new().expect("can only create menu item on the main thread");
+        let mtm = main_thread_marker();
         let ns_menu_item = match &predefined_item_type {
             PredefinedMenuItemType::Separator => NSMenuItem::separatorItem(mtm),
             PredefinedMenuItemType::SectionHeader if objc2::available!(macos = 14.0) => {
@@ -853,7 +869,7 @@ impl PlatformMenuItem {
         owner: Rc<RefCell<PlatformMenuItem>>,
         menu_id: u32,
     ) -> crate::Result<Retained<NSMenuItem>> {
-        let mtm = MainThreadMarker::new().expect("can only create menu item on the main thread");
+        let mtm = main_thread_marker();
         let ns_menu_item = MudaNSMenuItem::create(
             mtm,
             &args.text,
@@ -885,7 +901,7 @@ impl PlatformMenuItem {
         owner: Rc<RefCell<PlatformMenuItem>>,
         menu_id: u32,
     ) -> crate::Result<Retained<NSMenuItem>> {
-        let mtm = MainThreadMarker::new().expect("can only create menu item on the main thread");
+        let mtm = main_thread_marker();
         let ns_menu_item = MudaNSMenuItem::create(
             mtm,
             &args.text,
@@ -917,7 +933,7 @@ impl PlatformMenuItem {
         owner: Rc<RefCell<PlatformMenuItem>>,
         menu_id: u32,
     ) -> crate::Result<Retained<NSMenuItem>> {
-        let mtm = MainThreadMarker::new().expect("can only create menu item on the main thread");
+        let mtm = main_thread_marker();
         let ns_menu_item = MudaNSMenuItem::create(
             mtm,
             &args.text,

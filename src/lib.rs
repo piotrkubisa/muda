@@ -17,6 +17,9 @@
 //!
 //! - On macOS, menus can only be used from the main thread, and most
 //!   functionality will panic if you try to use it from any other thread.
+//!   Building menus and items is the exception under `cargo test`, where tests run
+//!   on worker threads: constructing and inspecting them works there, but showing
+//!   or attaching a menu still requires the main thread.
 //!
 //! - On Windows, accelerators don't work unless the win32 message loop calls
 //!   [`TranslateAcceleratorW`](https://docs.rs/windows-sys/latest/windows_sys/Win32/UI/WindowsAndMessaging/fn.TranslateAcceleratorW.html).

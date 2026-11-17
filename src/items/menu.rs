@@ -693,3 +693,47 @@ pub(crate) fn positions_of(children: &[UnsafeMenuItemKind], id: &MenuId) -> Vec<
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, RadioMenuItem, Submenu,
+    };
+
+    // cargo test runs tests on worker threads, so this also covers building a whole
+    // menu off the main thread.
+    #[test]
+    fn menu_structure_can_be_built_in_a_unit_test() {
+        let item = MenuItem::new("Item", true, None);
+        let check = CheckMenuItem::new("Check", true, false, None);
+        let radio = RadioMenuItem::new("Radio", true, false, None, "group");
+        let submenu = Submenu::with_items(
+            "Sub",
+            true,
+            &[&item, &check, &radio, &PredefinedMenuItem::separator()],
+        )
+        .unwrap();
+        let top = MenuItem::new("Top", false, None);
+        let menu = Menu::with_items(&[&submenu, &top]).unwrap();
+
+        let items = menu.items();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].as_menuitem().unwrap().text(), "Top");
+        assert!(!items[1].as_menuitem().unwrap().is_enabled());
+
+        let sub = items[0].as_submenu().unwrap();
+        assert_eq!(sub.text(), "Sub");
+        let sub_items = sub.items();
+        assert_eq!(sub_items.len(), 4);
+        assert_eq!(sub_items[0].as_menuitem().unwrap().id(), item.id());
+        assert!(sub_items[1].as_check_menuitem().unwrap().is_enabled());
+        assert!(!sub_items[1].as_check_menuitem().unwrap().is_checked());
+        assert_eq!(sub_items[2].as_radio_menuitem().unwrap().group(), "group");
+        assert!(matches!(sub_items[3], MenuItemKind::Predefined(_)));
+
+        // Removal works off the main thread too.
+        let removed = menu.remove_at(1).unwrap();
+        assert_eq!(removed.as_menuitem().unwrap().id(), top.id());
+        assert_eq!(menu.items().len(), 1);
+    }
+}
